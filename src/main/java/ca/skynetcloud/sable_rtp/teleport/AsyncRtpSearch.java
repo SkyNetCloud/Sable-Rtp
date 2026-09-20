@@ -26,29 +26,11 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 
-/**
- * Replaces the old blocking search loop.
- * <p>
- * The original implementation called {@code level.getChunk(...)} for up to 30 random positions scattered
- * across the whole search area, on the server thread. In ungenerated terrain that is 30 synchronous full
- * chunk generations back to back — a multi-second stall for everyone online.
- * <p>
- * This version instead:
- * <ul>
- *   <li>asks for chunks through {@link ServerChunkCache#getChunkFuture} so generation happens on the
- *       worker threads and the server thread never blocks;</li>
- *   <li>filters candidates at {@link ChunkStatus#NOISE} using only the world-gen heightmaps, so features,
- *       block entities and lighting are never generated for a position we're about to throw away;</li>
- *   <li>only promotes the one surviving candidate to {@link ChunkStatus#FULL} for the detailed check;</li>
- *   <li>spreads the work across ticks, at a configurable rate.</li>
- * </ul>
- */
+
 @EventBusSubscriber(modid = Sable_rtp.MODID)
 public final class AsyncRtpSearch {
 
-    /** Self-expiring ticket so the destination stays loaded through the warmup, then releases itself. */
-    private static final TicketType<ChunkPos> RTP_TICKET =
-            TicketType.create("sable_rtp_destination", Comparator.comparingLong(ChunkPos::toLong), 20 * 30);
+    private static final TicketType<ChunkPos> RTP_TICKET = TicketType.create("sable_rtp_destination", Comparator.comparingLong(ChunkPos::toLong), 20 * 30);
 
     private static final List<Search> ACTIVE = new ArrayList<>();
 
@@ -58,14 +40,7 @@ public final class AsyncRtpSearch {
     public record Result(BlockPos pos, int attempts) {
     }
 
-    public static void start(ServerLevel level,
-                             UUID owner,
-                             SubLevelUtils.VesselType vesselType,
-                             int originX,
-                             int originZ,
-                             double halfSizeX,
-                             double halfSizeZ,
-                             Consumer<Result> onDone) {
+    public static void start(ServerLevel level, UUID owner, SubLevelUtils.VesselType vesselType, int originX, int originZ, double halfSizeX, double halfSizeZ, Consumer<Result> onDone) {
         ACTIVE.add(new Search(level, owner, vesselType, originX, originZ, halfSizeX, halfSizeZ, onDone));
     }
 
@@ -116,8 +91,7 @@ public final class AsyncRtpSearch {
         private boolean finished;
         private CompletableFuture<ChunkResult<ChunkAccess>> pending;
 
-        Search(ServerLevel level, UUID owner, SubLevelUtils.VesselType vesselType,
-               int originX, int originZ, double halfSizeX, double halfSizeZ, Consumer<Result> onDone) {
+        Search(ServerLevel level, UUID owner, SubLevelUtils.VesselType vesselType, int originX, int originZ, double halfSizeX, double halfSizeZ, Consumer<Result> onDone) {
             this.level = level;
             this.owner = owner;
             this.vesselType = vesselType;
