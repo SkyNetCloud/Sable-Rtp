@@ -4,18 +4,18 @@ import ca.skynetcloud.sable_rtp.Config;
 import ca.skynetcloud.sable_rtp.Sable_rtp;
 import net.minecraft.ChatFormatting;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.tick.PlayerTickEvent;
-import net.minecraft.server.level.ServerPlayer;
 
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.Map;
 import java.util.UUID;
-
 
 @EventBusSubscriber(modid = Sable_rtp.MODID)
 public class RtpWarmupManager {
@@ -24,7 +24,17 @@ public class RtpWarmupManager {
 
     private static final Map<UUID, PendingTeleport> PENDING = new HashMap<>();
 
-    private record PendingTeleport(long readyAtMillis, Vec3 startPos, Runnable onComplete) {
+    /** Counts down in ticks rather than wall-clock millis, so lag and pauses behave sanely. */
+    private static final class PendingTeleport {
+        int ticksLeft;
+        final Vec3 startPos;
+        final Runnable onComplete;
+
+        PendingTeleport(int ticksLeft, Vec3 startPos, Runnable onComplete) {
+            this.ticksLeft = ticksLeft;
+            this.startPos = startPos;
+            this.onComplete = onComplete;
+        }
     }
 
     public static void schedule(ServerPlayer player, Runnable onComplete) {
@@ -34,14 +44,18 @@ public class RtpWarmupManager {
             return;
         }
 
-        long readyAt = System.currentTimeMillis() + (warmupSeconds * 1000L);
-        PENDING.put(player.getUUID(), new PendingTeleport(readyAt, player.position(), onComplete));
-
-        player.displayClientMessage(Component.literal("Teleporting in " + warmupSeconds + "s... don't move!").withStyle(ChatFormatting.YELLOW), true);
+        PENDING.put(player.getUUID(), new PendingTeleport(warmupSeconds * 20, player.position(), onComplete));
+        player.displayClientMessage(
+                Component.translatable("message.warmup.start.text", warmupSeconds).withStyle(ChatFormatting.YELLOW),
+                true);
     }
 
     public static boolean hasPending(UUID playerId) {
         return PENDING.containsKey(playerId);
+    }
+
+    public static boolean cancel(UUID playerId) {
+        return PENDING.remove(playerId) != null;
     }
 
     @SubscribeEvent
@@ -53,19 +67,25 @@ public class RtpWarmupManager {
         PendingTeleport pending = PENDING.get(player.getUUID());
         if (pending == null) return;
 
-        if (player.position().distanceToSqr(pending.startPos()) > MOVEMENT_CANCEL_THRESHOLD_SQ) {
+        if (player.position().distanceToSqr(pending.startPos) > MOVEMENT_CANCEL_THRESHOLD_SQ) {
             PENDING.remove(player.getUUID());
-            player.displayClientMessage(Component.literal("Teleport cancelled — you moved.").withStyle(ChatFormatting.RED), true);
+            player.displayClientMessage(
+                    Component.translatable("message.warmup.cancelled.text").withStyle(ChatFormatting.RED), true);
             return;
         }
 
-        long now = System.currentTimeMillis();
-        if (now >= pending.readyAtMillis()) {
+        if (--pending.ticksLeft <= 0) {
             PENDING.remove(player.getUUID());
-            pending.onComplete().run();
-        } else {
-            long secondsLeft = (pending.readyAtMillis() - now + 999) / 1000L;
-            player.displayClientMessage(Component.literal("Teleporting in " + secondsLeft + "...").withStyle(ChatFormatting.YELLOW), true);
+            pending.onComplete.run();
+            return;
+        }
+
+        // Only refresh the action bar on second boundaries instead of every tick.
+        if (pending.ticksLeft % 20 == 0) {
+            int secondsLeft = pending.ticksLeft / 20;
+            player.displayClientMessage(
+                    Component.translatable("message.warmup.counting.text", secondsLeft).withStyle(ChatFormatting.YELLOW),
+                    true);
         }
     }
 
@@ -73,6 +93,14 @@ public class RtpWarmupManager {
     public static void onPlayerLoggedOut(PlayerEvent.PlayerLoggedOutEvent event) {
         if (event.getEntity() != null) {
             PENDING.remove(event.getEntity().getUUID());
+        }
+    }
+
+    /** Drops any warmup whose player has vanished, e.g. after a dimension change. */
+    public static void purgeInvalid() {
+        Iterator<Map.Entry<UUID, PendingTeleport>> it = PENDING.entrySet().iterator();
+        while (it.hasNext()) {
+            if (it.next().getValue().ticksLeft <= 0) it.remove();
         }
     }
 }
